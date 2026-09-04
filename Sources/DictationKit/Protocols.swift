@@ -6,9 +6,15 @@ import Foundation
 /// 16kHz mono PCM captured from the mic. `isEmpty` drives the "no audio" path — the
 /// prototype found an unfinalized recording yields zero frames.
 public struct CapturedAudio: Equatable, Sendable {
+    public static let sampleRate = 16_000
+    public static let minimumLiveSampleCount = 8_000
     public let samples: [Float]
     public init(samples: [Float]) { self.samples = samples }
     public var isEmpty: Bool { samples.isEmpty }
+}
+
+public protocol TextNormalizer: Sendable {
+    func normalize(_ text: String) -> String
 }
 
 /// Captures microphone audio. Real impl: `AVAudioEngine` (#4).
@@ -45,6 +51,24 @@ public struct CapturedAudio: Equatable, Sendable {
 }
 
 /// User-configurable behavior, persisted across restarts by `SettingsStore`.
+public enum CueVolume: Float, CaseIterable, Sendable, Equatable, Codable {
+    case mute = 0
+    case quarter = 0.25
+    case half = 0.5
+    case threeQuarters = 0.75
+    case full = 1
+
+    public var title: String {
+        switch self {
+        case .mute: return "Mute"
+        case .quarter: return "25%"
+        case .half: return "50%"
+        case .threeQuarters: return "75%"
+        case .full: return "100%"
+        }
+    }
+}
+
 public struct Settings: Equatable, Sendable, Codable {
     public enum Mode: String, Sendable, Equatable, Codable {
         /// Hold to talk, release to transcribe+insert.
@@ -57,14 +81,35 @@ public struct Settings: Equatable, Sendable, Codable {
     public var activationKey: ModifierKey
     public var mode: Mode
     public var restoreClipboard: Bool
+    public var cueVolume: CueVolume
+    public var normalizeLiveDictation: Bool
 
     public init(
         activationKey: ModifierKey = .rightOption,
         mode: Mode = .pushToTalk,
-        restoreClipboard: Bool = true
+        restoreClipboard: Bool = true,
+        cueVolume: CueVolume = .full,
+        normalizeLiveDictation: Bool = true
     ) {
         self.activationKey = activationKey
         self.mode = mode
         self.restoreClipboard = restoreClipboard
+        self.cueVolume = cueVolume
+        self.normalizeLiveDictation = normalizeLiveDictation
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activationKey, mode, restoreClipboard, cueVolume, normalizeLiveDictation
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        activationKey = try values.decode(ModifierKey.self, forKey: .activationKey)
+        mode = try values.decode(Mode.self, forKey: .mode)
+        restoreClipboard = try values.decode(Bool.self, forKey: .restoreClipboard)
+        cueVolume = try values.decodeIfPresent(CueVolume.self, forKey: .cueVolume) ?? .full
+        normalizeLiveDictation = try values.decodeIfPresent(
+            Bool.self, forKey: .normalizeLiveDictation
+        ) ?? true
     }
 }

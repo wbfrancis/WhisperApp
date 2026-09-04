@@ -28,6 +28,19 @@ final class LocalWhisperEngineIntegrationTests: XCTestCase {
         XCTAssertTrue(text.isEmpty || text.count < 30, "silence should not yield real words: \(text)")
     }
 
+    func testEngineReturnsRawSpokenTimeWithoutNormalization() async throws {
+        let model = try modelPathOrSkip()
+        let fixture = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("fixtures/audio/Levels A.m4a")
+        let samples = try AudioDecoding.samples16kMono(fromFile: fixture)
+        let engine = LocalWhisperEngine(modelPath: model)
+
+        let text = try await engine.transcribeRaw(samples).lowercased()
+
+        XCTAssertFalse(text.contains("3:00"), "engine output must stay raw: \(text)")
+        XCTAssertTrue(text.contains("o'clock"), "expected fixture's spoken clock form: \(text)")
+    }
+
     // MARK: - Helpers
 
     private func modelPathOrSkip() throws -> String {

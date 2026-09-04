@@ -67,7 +67,7 @@ for fixture in fixtures {
         let samples = trimOn
             ? SilenceTrim.trimmingTrailingSilence(raw, absoluteFloor: floor, relativeFraction: fraction, pad: pad)
             : raw
-        got = try await engine.transcribeRaw(samples)
+        got = DeterministicTextNormalizer().normalize(try await engine.transcribeRaw(samples))
     } catch {
         print("✗ \(fixture.file)  ERROR \(error)")
         totalWER += 1

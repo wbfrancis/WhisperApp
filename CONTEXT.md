@@ -6,6 +6,61 @@ A barebones, seamless dictation tool. **macOS is the priority platform** (this d
 
 Replace WhisprFlow with the most barebones feature set: press a key, talk, get accurate text inserted where the cursor is. No analytics or "analysis" features — unless a signal can be fed *back* into dictation to improve accuracy (e.g. custom vocabulary).
 
+## Language
+
+**Live dictation**:
+Speech captured from the current microphone while the activation key is active, then inserted at the cursor.
+_Avoid_: Recording import, file transcription
+
+**Short capture**:
+A live dictation shorter than 0.5 seconds. The app treats it as no speech; a capture of exactly 0.5 seconds is valid.
+_Avoid_: Empty capture
+
+**File transcription**:
+A local, English-language conversion of a user-selected `.m4a` or `.wav` recording of at most 30 minutes into editable text with Copy and Save actions. It does not insert text at the cursor.
+_Avoid_: Upload, imported dictation
+
+**File transcription progress**:
+The percentage of file chunks that the app completed. The menu shows this percentage while a file is in progress; an interrupted chunk does not advance it.
+
+**File transcription controls**:
+The menu status line shows file progress, and **Cancel File Transcription** stops the job. The app opens no progress window; it opens a file result only after completion or cancellation.
+
+**File transcription preemption**:
+Live dictation interrupts only the active file chunk, takes priority, then lets file transcription retry that chunk and continue. Completed chunks remain intact.
+
+**File result**:
+The editable raw transcript that appears when file transcription finishes. Its **Normalize Text** action changes the text without another transcription, and standard Undo restores the raw result.
+
+**Partial file result**:
+The editable text from every completed file chunk when the user cancels transcription. It is labeled **Partial** and keeps the same Copy and Save actions as a complete file result; the unfinished chunk is absent.
+
+**Raw transcript**:
+The text that the local transcription model returns, with only outer whitespace removed.
+
+**Normalize Text**:
+An optional deterministic pass that converts spoken dates and times in a raw transcript into visual text. Dates use an unambiguous written-month form, and relative dates remain unchanged. Inferred visual lists need a future language-model implementation and are not part of this round.
+_Avoid_: Transcription cleanup
+
+**Normalize Text on Live Dictation**:
+The saved menu toggle that applies Normalize Text before the app inserts live dictation. It is enabled by default.
+
+**Cue volume**:
+One saved volume level shared by the recording start and stop sounds. Its levels are Mute, 25%, 50%, 75%, and 100%; the current volume remains the default.
+
+**Microphone recovery**:
+The automatic repair of live capture after the system input device changes. A change during live dictation discards the partial capture and reports **microphone changed — try again**. A manual **Reset Microphone** action during live dictation cancels that dictation and reports **microphone reset — try again**. During file transcription, it repairs the microphone without stopping the file job. A full app restart is not part of this recovery round.
+
+**Status dot**:
+The live-dictation state shown by a colored dot in the bottom-right foreground of the menu-bar icon, while the waveform behind it stays the normal shape and color. Idle shows no dot: just the normal waveform, visible in both light and dark menu bars, never fading to an invisible icon. Recording is a solid red dot. Transcription and paste share one slow yellow blink, crisp on and off. A successful insertion is a solid blue dot for one second, then fades out over one second. A failed live dictation blinks the dot orange quickly for five seconds, then fades out. A short capture or no-speech result gives one brief orange flash that fades out. The blinks never fade in or out; only the success and failure results fade, since those are the end states. A new recording during any result animation replaces the dot at once with solid red. File transcription does not drive this dot; its progress stays in the menu status line.
+
+**Insertion success**:
+The state the blue dot reports: the insertion operation returned without error. For an external app it does not claim the destination visibly accepted the text, only that the paste was posted; for Add Feedback it means the transcript was inserted into the editor.
+
+**Add Feedback**:
+A menu action that appends a typed or dictated note to the feedback log. Dictated speech is inserted at the insertion point, replacing any selection, and keeps the standard edit shortcuts, Undo, Save, and Cancel. It inserts the new transcript, never the previous clipboard. The restore-clipboard setting still holds: with restore on the clipboard is left untouched, with it off the transcript is left on the clipboard.
+_Avoid_: feedback box, note dialog
+
 ## Settled facts (environment)
 
 - **Machine**: macOS 14.6.1 (Sonoma), Apple Silicon (arm64).

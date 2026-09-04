@@ -1,128 +1,155 @@
 import Foundation
 import CWhisper
 
-/// Owns the whisper.cpp context so its C resource is freed in a plain (non-isolated)
-/// deinit, away from the engine's `@MainActor` isolation.
+public enum WhisperProfile: Sendable { case live, file }
+
+public final class TranscriptionCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    public init() {}
+    public func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    public var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 private final class WhisperContext {
     let pointer: OpaquePointer
     init(pointer: OpaquePointer) { self.pointer = pointer }
     deinit { whisper_free(pointer) }
 }
 
-/// `TranscriptionEngine` backed by whisper.cpp, linked in-process (via the CWhisper
-/// module) so the model is loaded once and kept resident across utterances.
-///
-/// Note: transcription is CPU/GPU-bound (~1s warm). Because the seam is `@MainActor`,
-/// this runs on the main actor for v1, which is acceptable for a menu-bar agent that
-/// has no other UI to service mid-dictation. Moving the whisper call off-main is a
-/// later optimization (the whisper context isn't `Sendable`, so it needs a guarded box).
-@MainActor
-public final class LocalWhisperEngine: TranscriptionEngine {
-    private var context: WhisperContext?
+private final class WhisperWorker: @unchecked Sendable {
+    private static let backendLock = NSLock()
+    nonisolated(unsafe) private static var backendsLoaded = false
+    private let execution = SerialTranscriptionExecutor()
     private let modelPath: String
+    private var context: WhisperContext?
 
-    public init(modelPath: String) {
-        self.modelPath = modelPath
+    init(modelPath: String) { self.modelPath = modelPath }
+
+    func transcribe(
+        samples: [Float], profile: WhisperProfile, token: TranscriptionCancellationToken
+    ) async throws -> String {
+        try await execution.run { [self] in try run(samples: samples, profile: profile, token: token) }
     }
 
-    /// Ensure the model is present (downloading on first run) via the store, then build
-    /// an engine pointed at it. This is the seam the app assembles at launch (#7).
-    public static func resident(
-        modelStore: WhisperModelStore = WhisperModelStore()
-    ) async throws -> LocalWhisperEngine {
-        let url = try await modelStore.ensureAvailable()
-        return LocalWhisperEngine(modelPath: url.path)
-    }
-
-    /// Load the model and run one transcription on silence, paying the one-time Metal
-    /// shader-compile cost at launch so the first real dictation isn't slow.
-    public func warmUp() async {
-        try? loadIfNeeded()
-        _ = try? run(samples: [Float](repeating: 0, count: 16_000))  // 1s of silence
-    }
-
-    public func transcribe(_ audio: CapturedAudio) async throws -> String {
-        // Cut trailing silence first — whisper hallucinates a continuation to fill it
-        // (e.g. "1 2 3 4 5 6" → "…7 8 9 10").
-        try await transcribeRaw(SilenceTrim.trimmingTrailingSilence(audio.samples))
-    }
-
-    /// Transcribe 16kHz mono samples with no silence trimming applied. The eval harness
-    /// uses this so it can apply (and tune) the trim itself.
-    public func transcribeRaw(_ samples: [Float]) async throws -> String {
-        try loadIfNeeded()
-        guard !samples.isEmpty else { return "" }  // nothing to transcribe → no-audio path
-        return try run(samples: samples)
-    }
-
-    // MARK: - whisper.cpp
-
-    /// ggml's compute backends (CPU/Metal) are separate plugins loaded at runtime. They
-    /// aren't pulled in by linking `-lggml`, so load them once from ggml's plugin dir —
-    /// without this, whisper aborts with "backends = 0".
-    private static var backendsLoaded = false
     private func loadBackendsIfNeeded() throws {
+        Self.backendLock.lock(); defer { Self.backendLock.unlock() }
         guard !Self.backendsLoaded else { return }
-        let path = ProcessInfo.processInfo.environment["GGML_BACKEND_PATH"]
-            ?? "/opt/homebrew/opt/ggml/libexec"
+        let path = ProcessInfo.processInfo.environment["GGML_BACKEND_PATH"] ?? "/opt/homebrew/opt/ggml/libexec"
         ggml_backend_load_all_from_path(path)
-        // Verify a backend actually registered; otherwise whisper.cpp would abort the
-        // process (uncatchable) on init. Throw a catchable error instead, and don't
-        // cache a failed load.
-        guard ggml_backend_reg_count() > 0 else {
-            throw WhisperError.backendsUnavailable(path)
-        }
+        guard ggml_backend_reg_count() > 0 else { throw WhisperError.backendsUnavailable(path) }
         Self.backendsLoaded = true
     }
 
     private func loadIfNeeded() throws {
         guard context == nil else { return }
         try loadBackendsIfNeeded()
-        var cparams = whisper_context_default_params()
-        cparams.use_gpu = true
-        guard let pointer = whisper_init_from_file_with_params(modelPath, cparams) else {
+        var parameters = whisper_context_default_params()
+        parameters.use_gpu = true
+        guard let pointer = whisper_init_from_file_with_params(modelPath, parameters) else {
             throw WhisperError.modelLoadFailed(modelPath)
         }
         context = WhisperContext(pointer: pointer)
     }
 
-    private func run(samples: [Float]) throws -> String {
-        guard let ctx = context?.pointer else { throw WhisperError.notLoaded }
-
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        params.print_progress = false
-        params.print_realtime = false
-        params.print_timestamps = false
-        params.no_timestamps = true
-        params.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
-
-        // Anti-hallucination: a push-to-talk clip is one short utterance, so force a single
-        // segment and don't carry context between calls; suppress non-speech tokens; and
-        // keep decoding deterministic (no temperature fallback that can wander into a
-        // plausible-but-wrong continuation).
-        params.single_segment = true
-        params.no_context = true
-        params.suppress_blank = true
-        params.suppress_nst = true
-        params.temperature = 0.0
-        params.temperature_inc = 0.0
-
-        let status: Int32 = "en".withCString { lang in
-            params.language = lang
-            return samples.withUnsafeBufferPointer { buf in
-                whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
+    private func run(
+        samples: [Float], profile: WhisperProfile, token: TranscriptionCancellationToken
+    ) throws -> String {
+        guard !samples.isEmpty else { return "" }
+        if token.isCancelled { throw WhisperError.cancelled }
+        try loadIfNeeded()
+        guard let context = context?.pointer else { throw WhisperError.notLoaded }
+        var parameters = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        parameters.print_progress = false
+        parameters.print_realtime = false
+        parameters.print_timestamps = false
+        parameters.no_timestamps = true
+        parameters.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
+        parameters.no_context = true
+        parameters.suppress_blank = true
+        parameters.suppress_nst = true
+        parameters.temperature = 0
+        parameters.temperature_inc = 0
+        parameters.single_segment = profile == .live
+        parameters.abort_callback = { pointer in
+            guard let pointer else { return false }
+            return Unmanaged<TranscriptionCancellationToken>.fromOpaque(pointer)
+                .takeUnretainedValue().isCancelled
+        }
+        parameters.abort_callback_user_data = Unmanaged.passUnretained(token).toOpaque()
+        let status: Int32 = "en".withCString { language in
+            parameters.language = language
+            return samples.withUnsafeBufferPointer { buffer in
+                whisper_full(context, parameters, buffer.baseAddress, Int32(buffer.count))
             }
         }
+        if token.isCancelled { throw WhisperError.cancelled }
         guard status == 0 else { throw WhisperError.transcriptionFailed(status) }
-
         var text = ""
-        for i in 0..<whisper_full_n_segments(ctx) {
-            if let segment = whisper_full_get_segment_text(ctx, i) {
+        for index in 0..<whisper_full_n_segments(context) {
+            if let segment = whisper_full_get_segment_text(context, index) {
                 text += String(cString: segment)
             }
         }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Rewrite spoken clock times to H:MM ("three o'clock" → 3:00) before returning.
-        return TimeFormatting.format(trimmed)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+public final class SerialTranscriptionExecutor: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "whisper.resident-worker", qos: .userInitiated)
+    public init() {}
+
+    public func run<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do { continuation.resume(returning: try operation()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+}
+
+@MainActor public protocol FileChunkTranscribing: AnyObject {
+    func transcribeFileChunk(_ audio: CapturedAudio) async throws -> String
+    func cancelFileChunk()
+}
+
+@MainActor
+public final class LocalWhisperEngine: TranscriptionEngine, FileChunkTranscribing {
+    private let worker: WhisperWorker
+    private var activeFileToken: TranscriptionCancellationToken?
+
+    public init(modelPath: String) { worker = WhisperWorker(modelPath: modelPath) }
+
+    public static func resident(modelStore: WhisperModelStore = WhisperModelStore()) async throws -> LocalWhisperEngine {
+        let url = try await modelStore.ensureAvailable()
+        return LocalWhisperEngine(modelPath: url.path)
+    }
+
+    public func warmUp() async {
+        _ = try? await worker.transcribe(
+            samples: [Float](repeating: 0, count: CapturedAudio.sampleRate),
+            profile: .live, token: TranscriptionCancellationToken()
+        )
+    }
+
+    public func transcribe(_ audio: CapturedAudio) async throws -> String {
+        try await transcribeRaw(SilenceTrim.trimmingTrailingSilence(audio.samples))
+    }
+
+    public func transcribeRaw(_ samples: [Float]) async throws -> String {
+        try await worker.transcribe(samples: samples, profile: .live, token: TranscriptionCancellationToken())
+    }
+
+    public func transcribeFileChunk(_ audio: CapturedAudio) async throws -> String {
+        let token = TranscriptionCancellationToken()
+        activeFileToken = token
+        defer { if activeFileToken === token { activeFileToken = nil } }
+        return try await worker.transcribe(samples: audio.samples, profile: .file, token: token)
+    }
+
+    public func cancelFileChunk() { activeFileToken?.cancel() }
 }

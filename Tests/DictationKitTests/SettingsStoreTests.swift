@@ -14,6 +14,35 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.load(), Settings())
     }
 
+    func testNewDefaultsKeepCurrentCueVolumeAndEnableLiveNormalization() {
+        let settings = Settings()
+        XCTAssertEqual(settings.cueVolume, .full)
+        XCTAssertTrue(settings.normalizeLiveDictation)
+    }
+
+    func testLegacyJSONKeepsOldFieldsAndDefaultsNewFields() throws {
+        let defaults = scratchDefaults()
+        let legacy = #"{"activationKey":{"keyCode":55,"deviceMask":8},"mode":"toggle","restoreClipboard":false}"#
+        defaults.set(Data(legacy.utf8), forKey: "settings.v1")
+
+        let loaded = SettingsStore(defaults: defaults).load()
+
+        XCTAssertEqual(loaded.activationKey, .leftCommand)
+        XCTAssertEqual(loaded.mode, .toggle)
+        XCTAssertFalse(loaded.restoreClipboard)
+        XCTAssertEqual(loaded.cueVolume, .full)
+        XCTAssertTrue(loaded.normalizeLiveDictation)
+    }
+
+    func testEveryCueVolumeRoundTrips() {
+        for volume in CueVolume.allCases {
+            let store = SettingsStore(defaults: scratchDefaults())
+            store.save(Settings(cueVolume: volume, normalizeLiveDictation: false))
+            XCTAssertEqual(store.load().cueVolume, volume)
+            XCTAssertFalse(store.load().normalizeLiveDictation)
+        }
+    }
+
     func testSavedSettingsRoundTrip() {
         let store = SettingsStore(defaults: scratchDefaults())
         let custom = Settings(activationKey: .leftCommand, mode: .toggle, restoreClipboard: false)

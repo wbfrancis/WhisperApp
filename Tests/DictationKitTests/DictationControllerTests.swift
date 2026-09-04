@@ -5,13 +5,15 @@ import XCTest
 final class DictationControllerTests: XCTestCase {
 
     private func makeController(
-        settings: Settings = Settings()
+        settings: Settings = Settings(),
+        normalizer: any TextNormalizer = DeterministicTextNormalizer()
     ) -> (DictationController, FakeAudioSource, FakeTranscriptionEngine, FakeTextInjector) {
         let audio = FakeAudioSource()
         let engine = FakeTranscriptionEngine()
         let injector = FakeTextInjector()
         let controller = DictationController(
-            audio: audio, engine: engine, injector: injector, settings: settings
+            audio: audio, engine: engine, injector: injector, normalizer: normalizer,
+            settings: settings
         )
         return (controller, audio, engine, injector)
     }
@@ -48,12 +50,13 @@ final class DictationControllerTests: XCTestCase {
 
     func testPushToTalk_transcribeReceivesCapturedAudio() async {
         let (c, audio, engine, _) = makeController()
-        audio.toReturn = CapturedAudio(samples: [1, 2, 3, 4])
+        let samples = [Float](repeating: 0.2, count: 8_000)
+        audio.toReturn = CapturedAudio(samples: samples)
 
         await c.activationBegan()
         await c.activationEnded()
 
-        XCTAssertEqual(engine.lastAudio, CapturedAudio(samples: [1, 2, 3, 4]))
+        XCTAssertEqual(engine.lastAudio, CapturedAudio(samples: samples))
     }
 
     // MARK: - Outcome callback
@@ -139,6 +142,73 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(c.lastOutcome, .noAudio)
         XCTAssertEqual(engine.transcribeCount, 0)
         XCTAssertTrue(injector.injected.isEmpty)
+    }
+
+    func testCaptureBelowHalfSecondDoesNotReachEngineOrInjector() async {
+        let (c, audio, engine, injector) = makeController()
+        audio.toReturn = CapturedAudio(samples: [Float](repeating: 0.1, count: 7_999))
+
+        await c.activationBegan()
+        await c.activationEnded()
+
+        XCTAssertEqual(c.lastOutcome, .noAudio)
+        XCTAssertEqual(engine.transcribeCount, 0)
+        XCTAssertTrue(injector.injected.isEmpty)
+    }
+
+    func testCaptureAtHalfSecondReachesEngine() async {
+        let (c, audio, engine, _) = makeController()
+        audio.toReturn = CapturedAudio(samples: [Float](repeating: 0.1, count: 8_000))
+
+        await c.activationBegan()
+        await c.activationEnded()
+
+        XCTAssertEqual(engine.transcribeCount, 1)
+    }
+
+    func testLiveNormalizationRunsWhenEnabled() async {
+        let settings = Settings(normalizeLiveDictation: true)
+        let (c, _, engine, injector) = makeController(
+            settings: settings, normalizer: FakeTextNormalizer(result: "August 25, 2026 at 3:00")
+        )
+        engine.result = "August twenty-fifth twenty twenty-six at three o'clock"
+
+        await c.activationBegan()
+        await c.activationEnded()
+
+        XCTAssertEqual(injector.injected, ["August 25, 2026 at 3:00"])
+    }
+
+    func testLiveNormalizationLeavesRawTranscriptWhenDisabled() async {
+        let settings = Settings(normalizeLiveDictation: false)
+        let (c, _, engine, injector) = makeController(
+            settings: settings, normalizer: FakeTextNormalizer(result: "changed")
+        )
+        engine.result = "raw transcript"
+
+        await c.activationBegan()
+        await c.activationEnded()
+
+        XCTAssertEqual(injector.injected, ["raw transcript"])
+    }
+
+    func testMicrophoneRecoveryCancellationDiscardsCaptureAndReturnsIdle() async {
+        let (c, audio, engine, injector) = makeController()
+        var presenter = MenuBarPresenter()
+        var sounds: [DictationSound] = []
+        c.onStateChange = { state in
+            if let sound = presenter.advance(to: state) { sounds.append(sound) }
+        }
+
+        await c.activationBegan()
+        await c.cancelRecording(reason: "microphone changed — try again")
+
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(c.lastOutcome, .failed("microphone changed — try again"))
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(engine.transcribeCount, 0)
+        XCTAssertTrue(injector.injected.isEmpty)
+        XCTAssertEqual(sounds, [.start, .stop])
     }
 
     func testEmptyTranscript_yieldsNoAudioAndDoesNotInject() async {

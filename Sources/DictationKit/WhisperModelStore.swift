@@ -4,6 +4,7 @@ public enum WhisperError: Error, Equatable {
     case modelLoadFailed(String)
     case notLoaded
     case transcriptionFailed(Int32)
+    case cancelled
     case downloadFailed(Int)
     /// ggml's compute backend plugins didn't load from the given path — a config error
     /// caught before whisper.cpp would otherwise abort the process.

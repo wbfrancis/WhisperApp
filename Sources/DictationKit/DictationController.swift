@@ -39,17 +39,20 @@ public final class DictationController {
     private let audio: AudioSource
     private let engine: TranscriptionEngine
     private let injector: TextInjector
+    private let normalizer: any TextNormalizer
     public var settings: Settings
 
     public init(
         audio: AudioSource,
         engine: TranscriptionEngine,
         injector: TextInjector,
+        normalizer: any TextNormalizer = DeterministicTextNormalizer(),
         settings: Settings = Settings()
     ) {
         self.audio = audio
         self.engine = engine
         self.injector = injector
+        self.normalizer = normalizer
         self.settings = settings
     }
 
@@ -97,7 +100,7 @@ public final class DictationController {
         guard state == .recording else { return }
 
         let captured = await audio.stopCapture()
-        guard !captured.isEmpty else {
+        guard captured.samples.count >= CapturedAudio.minimumLiveSampleCount else {
             finish(.noAudio)
             return
         }
@@ -118,15 +121,24 @@ public final class DictationController {
             return
         }
 
+        let insertionText = settings.normalizeLiveDictation ? normalizer.normalize(text) : text
         state = .injecting
         do {
-            try injector.inject(text, restoringPreviousClipboard: settings.restoreClipboard)
+            try injector.inject(
+                insertionText, restoringPreviousClipboard: settings.restoreClipboard
+            )
         } catch {
             finish(.failed(String(describing: error)))
             return
         }
 
-        finish(.injected(text))
+        finish(.injected(insertionText))
+    }
+
+    public func cancelRecording(reason: String) async {
+        guard state == .recording else { return }
+        _ = await audio.stopCapture()
+        finish(.failed(reason))
     }
 
     /// Record the cycle's result and return to idle. Every terminal path goes through

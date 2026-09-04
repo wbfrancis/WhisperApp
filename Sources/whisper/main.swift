@@ -2,6 +2,29 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 import DictationKit
+import UniformTypeIdentifiers
+
+@MainActor
+func installStandardEditMenu() {
+    let main = NSMenu()
+    let appItem = NSMenuItem()
+    main.addItem(appItem)
+    let appMenu = NSMenu()
+    appMenu.addItem(withTitle: "Quit whisper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    appItem.submenu = appMenu
+    let editItem = NSMenuItem()
+    main.addItem(editItem)
+    let editMenu = NSMenu(title: "Edit")
+    for command in StandardEditCommand.all {
+        editMenu.addItem(
+            withTitle: command.title,
+            action: NSSelectorFromString(command.selectorName),
+            keyEquivalent: command.key
+        )
+    }
+    editItem.submenu = editMenu
+    NSApp.mainMenu = main
+}
 
 /// Echo a lifecycle line to the terminal so behavior is visible when run via `swift run`
 /// (the menu status line isn't). Prefixed for easy grepping.
@@ -63,16 +86,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var keyItems: [NSMenuItem] = []
     private var modeItems: [NSMenuItem] = []
     private var restoreItem: NSMenuItem?
+    private var normalizeLiveItem: NSMenuItem?
+    private var cueVolumeItems: [NSMenuItem] = []
+    private var transcribeFileItem: NSMenuItem?
+    private var cancelFileItem: NSMenuItem?
 
     // Kept alive for the process lifetime: the controller drives the loop, the hotkey feeds
     // it activations, the continuation carries key events, and the sounds are reused.
     private var controller: DictationController?
+    private var audioSource: AVAudioEngineAudioSource?
+    private var microphoneResetCoordinator: MicrophoneResetCoordinator?
+    private var whisperEngine: LocalWhisperEngine?
+    private var fileCoordinator: FileTranscriptionCoordinator?
+    private var resultWindows: [FileResultWindowController] = []
     private var hotkey: CGEventTapHotkeySource?
     private var accessibilityRetry: Task<Void, Never>?
     private var activations: AsyncStream<Activation>.Continuation?
     private var presenter = MenuBarPresenter()
-    private let startSound = NSSound(named: "Tink")
-    private let stopSound = NSSound(named: "Pop")
+    private var iconAnimator: MenuBarIconAnimator?
+    private var routingInjector: RoutingTextInjector?
+    private let startSound = AppDelegate.bundledSound(named: "recording-start")
+    private let stopSound = AppDelegate.bundledSound(named: "recording-stop")
 
     private let settingsStore = SettingsStore()
     private var settings = Settings()
@@ -81,10 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         settings = settingsStore.load()  // sync + fast; ready before assembly builds anything
+        installStandardEditMenu()
+        applyCueVolume()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item  // set before setIcon: it reads statusItem?.button, so the idle icon shows at launch
-        setIcon(MenuBarPresentation.symbolName(for: .idle))
+        setIcon()
 
         let menu = NSMenu()
         let statusLine = NSMenuItem(title: "\(brand) — starting…", action: nil, keyEquivalent: "")
@@ -92,6 +128,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusLine)
         menu.addItem(.separator())
         buildConfigItems(into: menu)
+        menu.addItem(.separator())
+        let transcribeFile = NSMenuItem(
+            title: "Transcribe Audio File…", action: #selector(transcribeAudioFile), keyEquivalent: ""
+        )
+        transcribeFile.target = self
+        menu.addItem(transcribeFile)
+        transcribeFileItem = transcribeFile
+        let cancelFile = NSMenuItem(
+            title: "Cancel File Transcription", action: #selector(cancelFileTranscription), keyEquivalent: ""
+        )
+        cancelFile.target = self
+        cancelFile.isEnabled = false
+        menu.addItem(cancelFile)
+        cancelFileItem = cancelFile
+        let resetMicrophone = NSMenuItem(
+            title: "Reset Microphone", action: #selector(resetMicrophone), keyEquivalent: ""
+        )
+        resetMicrophone.target = self
+        menu.addItem(resetMicrophone)
         menu.addItem(.separator())
         let addFeedback = NSMenuItem(title: "Add Feedback…", action: #selector(addFeedback), keyEquivalent: "")
         addFeedback.target = self
@@ -143,15 +198,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let audio = AVAudioEngineAudioSource()
         try? audio.prewarm()  // hold the mic hot so the first key-down doesn't clip the first word
+        // Route insertion: dictation into our own Add Feedback editor inserts directly
+        // (see RoutingTextInjector); everything else goes through the pasteboard injector.
+        let routingInjector = RoutingTextInjector(external: PasteboardTextInjector())
+        self.routingInjector = routingInjector
         let controller = DictationController(
             audio: audio,
             engine: engine,
-            injector: PasteboardTextInjector(),
+            injector: routingInjector,
             settings: settings
         )
+        audio.onCaptureInvalidated = { reason in
+            Task {
+                switch reason {
+                case .deviceChanged:
+                    await controller.cancelRecording(reason: "microphone changed — try again")
+                case .manualReset:
+                    await controller.cancelRecording(reason: "microphone reset — try again")
+                }
+            }
+        }
         controller.onStateChange = { [weak self] state in self?.render(state) }
         controller.onOutcome = { [weak self] outcome in self?.report(outcome) }
         self.controller = controller
+        self.audioSource = audio
+        self.whisperEngine = engine
+        let microphoneResetCoordinator = MicrophoneResetCoordinator {
+            await audio.resetMicrophone()
+        }
+        microphoneResetCoordinator.onStatus = { [weak self] status in self?.setStatus(status) }
+        self.microphoneResetCoordinator = microphoneResetCoordinator
 
         // Pay the one-time model/Metal warm-up now so the first real dictation isn't slow.
         await controller.warmUp()
@@ -165,7 +241,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for await event in stream {
                 log("hotkey \(event)")
                 switch event {
-                case .began: await controller.activationBegan()
+                case .began:
+                    self.fileCoordinator?.pauseForLiveDictation()
+                    await controller.activationBegan()
                 case .ended: await controller.activationEnded()
                 }
             }
@@ -244,6 +322,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restore.target = self
         menu.addItem(restore)
         restoreItem = restore
+
+        let normalize = NSMenuItem(
+            title: "Normalize Text on Live Dictation", action: #selector(toggleLiveNormalization), keyEquivalent: ""
+        )
+        normalize.target = self
+        menu.addItem(normalize)
+        normalizeLiveItem = normalize
+
+        let cueMenu = NSMenu()
+        for volume in CueVolume.allCases {
+            let item = NSMenuItem(title: volume.title, action: #selector(selectCueVolume(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = NSNumber(value: volume.rawValue)
+            cueMenu.addItem(item)
+            cueVolumeItems.append(item)
+        }
+        let cueParent = NSMenuItem(title: "Cue Volume", action: nil, keyEquivalent: "")
+        cueParent.submenu = cueMenu
+        menu.addItem(cueParent)
     }
 
     private func refreshChecks() {
@@ -254,6 +351,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = (item.representedObject as? Settings.Mode == settings.mode) ? .on : .off
         }
         restoreItem?.state = settings.restoreClipboard ? .on : .off
+        normalizeLiveItem?.state = settings.normalizeLiveDictation ? .on : .off
+        for item in cueVolumeItems {
+            item.state = (item.representedObject as? NSNumber)?.floatValue == settings.cueVolume.rawValue ? .on : .off
+        }
     }
 
     @objc private func selectActivationKey(_ sender: NSMenuItem) {
@@ -274,6 +375,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persist()
     }
 
+    @objc private func toggleLiveNormalization() {
+        settings.normalizeLiveDictation.toggle()
+        persist()
+    }
+
+    @objc private func selectCueVolume(_ sender: NSMenuItem) {
+        guard let raw = (sender.representedObject as? NSNumber)?.floatValue,
+              let volume = CueVolume(rawValue: raw) else { return }
+        settings.cueVolume = volume
+        applyCueVolume()
+        persist()
+    }
+
+    private func applyCueVolume() {
+        let amplitudes = SoundVolumePresentation.amplitudes(for: settings.cueVolume)
+        startSound?.volume = amplitudes.start
+        stopSound?.volume = amplitudes.stop
+    }
+
     /// Save the change and keep every consumer of `settings` in sync: the controller reads
     /// mode and restore-clipboard live, so it must never hold a stale copy.
     private func persist() {
@@ -284,9 +404,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Presentation
 
+    private static func bundledSound(named name: String) -> NSSound? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav") else {
+            return nil
+        }
+        return NSSound(contentsOf: url, byReference: false)
+    }
+
     private func render(_ state: DictationController.State) {
-        let (symbol, sound) = presenter.advance(to: state)
-        setIcon(symbol)
+        iconAnimator?.update(state: state)
+        let sound = presenter.advance(to: state)
         switch sound {
         case .start: startSound?.play()
         case .stop: stopSound?.play()
@@ -294,26 +421,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func setIcon(_ symbolName: String) {
+    private func setIcon() {
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Dictation")
-        button.image?.isTemplate = true
+        let base: NSImage
+        if let image = Bundle.main.image(forResource: "whisper-menu-bar-icon") {
+            base = image
+        } else {
+            log("menu-bar icon resource missing; using waveform fallback")
+            base = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Dictation")
+                ?? NSImage(size: NSSize(width: 24, height: 18))
+        }
+        button.imageScaling = .scaleProportionallyDown
+        // The animator owns the icon from here: it renders the normal frame now (idle
+        // waveform, visible at launch in either menu-bar appearance) and later reflects the
+        // recording, processing, and result states.
+        iconAnimator = MenuBarIconAnimator(button: button, renderer: IconRenderer(base: base))
     }
 
     /// Turn each dictation result into a status-line message. A failure most often means a
     /// permission went missing at use time (e.g. mic denied), so name what's still needed.
     private func report(_ outcome: DictationController.Outcome) {
+        iconAnimator?.update(outcome: outcome)  // drive the result icon for every outcome
+        defer { fileCoordinator?.resumeAfterLiveDictation() }
         switch outcome {
         case .injected:
             setStatus("ready — hold \(settings.activationKey.displayName) to dictate")
         case .noAudio:
             setStatus("no speech detected — try again")
         case .failed(let reason):
+            if reason == "microphone changed — try again" || reason == "microphone reset — try again" {
+                setStatus(reason)
+                return
+            }
             // A missing permission is the usual cause; name it. Otherwise keep the reason.
             setStatus(PermissionsPresentation.summary(permissions.state()) ?? "dictation failed — \(reason)")
         case .idle:
             break
         }
+    }
+
+    // MARK: - File transcription
+
+    @objc private func transcribeAudioFile() {
+        guard fileCoordinator == nil, let engine = whisperEngine else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mpeg4Audio, .wav]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let plan = try AudioDecoding.plan(for: url)
+            let coordinator = FileTranscriptionCoordinator(engine: engine) { chunk in
+                try await Task.detached {
+                    CapturedAudio(samples: try AudioDecoding.samples16kMono(fromFile: url, chunk: chunk))
+                }.value
+            }
+            coordinator.onStateChange = { [weak self, weak coordinator] state in
+                guard let self else { return }
+                self.cancelFileItem?.isEnabled = coordinator?.isBusy == true
+                self.transcribeFileItem?.isEnabled = coordinator?.isBusy != true
+                if let status = FileMenuPresentation.status(for: state) { self.setStatus(status) }
+                if state == .idle || state.isTerminalFailure {
+                    self.fileCoordinator = nil
+                    self.cancelFileItem?.isEnabled = false
+                    self.transcribeFileItem?.isEnabled = true
+                    if state == .idle { self.setStatus("ready — hold \(self.settings.activationKey.displayName) to dictate") }
+                }
+            }
+            coordinator.onResult = { [weak self] result in self?.showFileResult(result) }
+            fileCoordinator = coordinator
+            _ = coordinator.start(sourceURL: url, plan: plan)
+        } catch {
+            setStatus("can't transcribe file — \(error.localizedDescription)")
+        }
+    }
+
+    @objc private func cancelFileTranscription() { fileCoordinator?.cancel() }
+
+    private func showFileResult(_ result: FileTranscriptionResult) {
+        let resultWindow = FileResultWindowController(result: result, normalizer: DeterministicTextNormalizer())
+        resultWindows.append(resultWindow)
+        resultWindow.onClose = { [weak self, weak resultWindow] in
+            guard let self, let resultWindow else { return }
+            self.resultWindows.removeAll { $0 === resultWindow }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        resultWindow.showWindow(nil)
+    }
+
+    @objc private func resetMicrophone() {
+        Task { await microphoneResetCoordinator?.performReset() }
     }
 
     private func setStatus(_ text: String) {
@@ -337,6 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         textView.autoresizingMask = [.width, .height]
         textView.font = .systemFont(ofSize: 13)
         textView.isRichText = false
+        textView.allowsUndo = true
         scroll.documentView = textView
         alert.accessoryView = scroll
 
@@ -345,7 +544,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         alert.window.initialFirstResponder = textView
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // While this editor is up and focused, dictation inserts into it directly instead
+        // of via pasteboard paste (which loses the race against clipboard restoration).
+        // The strong `target` here keeps the weak router reference alive for the modal's
+        // life; the defer clears it so a closed editor can't receive a late transcript.
+        let target = TextViewInsertionTarget(textView: textView)
+        routingInjector?.inProcessTarget = target
+        defer { routingInjector?.inProcessTarget = nil }
+
+        let response = withExtendedLifetime(target) { alert.runModal() }
+        guard response == .alertFirstButtonReturn else { return }
 
         do {
             let saved = try feedbackLog.append(textView.string)
@@ -368,6 +577,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        iconAnimator?.stop()
     }
 }
 

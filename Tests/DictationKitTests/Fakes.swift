@@ -5,7 +5,7 @@ struct TestError: Error, Equatable {}
 
 @MainActor
 final class FakeAudioSource: AudioSource {
-    var toReturn = CapturedAudio(samples: [0.1, 0.2, 0.3])
+    var toReturn = CapturedAudio(samples: [Float](repeating: 0.1, count: 8_000))
     var startError: Error?
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -19,6 +19,11 @@ final class FakeAudioSource: AudioSource {
         stopCount += 1
         return toReturn
     }
+}
+
+struct FakeTextNormalizer: TextNormalizer {
+    let result: String
+    func normalize(_ text: String) -> String { result }
 }
 
 @MainActor

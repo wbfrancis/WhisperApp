@@ -6,21 +6,10 @@ public enum DictationSound: Sendable, Equatable {
     case stop
 }
 
-/// Pure mapping from dictation state to menu-bar presentation, kept out of the app layer
-/// so the icon and sound choices are testable without AppKit. The executable turns these
-/// into an `NSImage` and `NSSound`; the decisions live here.
+/// Pure mapping from dictation state to the menu-bar sound cues, kept out of the app layer
+/// so the sound choices are testable without AppKit. It marks the recording transitions
+/// only; the icon's live-dictation colors are driven separately by `IconPresentationModel`.
 public enum MenuBarPresentation {
-    /// SF Symbol name for the status-bar icon in a given state. Idle shows an outline mic;
-    /// recording fills it; the post-recording work shows a waveform so the user can tell
-    /// "listening" from "thinking".
-    public static func symbolName(for state: DictationController.State) -> String {
-        switch state {
-        case .idle: return "mic"
-        case .recording: return "mic.fill"
-        case .transcribing, .injecting: return "waveform"
-        }
-    }
-
     /// The sound (if any) to play on a state transition: a start cue when recording begins,
     /// a stop cue when it ends. Other transitions are silent.
     public static func sound(
@@ -34,8 +23,8 @@ public enum MenuBarPresentation {
 }
 
 /// Tracks the previous state so the app doesn't have to pair transitions itself. Each
-/// `advance(to:)` returns the icon for the new state and the sound for the step taken to
-/// reach it — keeping the whole state→presentation mapping, transitions included, testable.
+/// `advance(to:)` returns the sound for the step taken to reach it, which keeps the
+/// transition rules testable without AppKit.
 public struct MenuBarPresenter {
     private var lastState: DictationController.State
 
@@ -45,12 +34,42 @@ public struct MenuBarPresenter {
 
     public mutating func advance(
         to state: DictationController.State
-    ) -> (symbol: String, sound: DictationSound?) {
-        let result = (
-            symbol: MenuBarPresentation.symbolName(for: state),
-            sound: MenuBarPresentation.sound(from: lastState, to: state)
-        )
+    ) -> DictationSound? {
+        let sound = MenuBarPresentation.sound(from: lastState, to: state)
         lastState = state
-        return result
+        return sound
+    }
+}
+
+public struct StandardEditCommand: Sendable, Equatable {
+    public let title: String
+    public let selectorName: String
+    public let key: String
+
+    public static let all: [StandardEditCommand] = [
+        .init(title: "Undo", selectorName: "undo:", key: "z"),
+        .init(title: "Redo", selectorName: "redo:", key: "Z"),
+        .init(title: "Cut", selectorName: "cut:", key: "x"),
+        .init(title: "Copy", selectorName: "copy:", key: "c"),
+        .init(title: "Paste", selectorName: "paste:", key: "v"),
+        .init(title: "Select All", selectorName: "selectAll:", key: "a"),
+    ]
+}
+
+public enum FileMenuPresentation {
+    public static func status(for state: FileTranscriptionState) -> String? {
+        switch state {
+        case .idle: return nil
+        case .running(let percent): return "transcribing file — \(percent)%"
+        case .pausedForLiveDictation(let percent): return "paused for live dictation — \(percent)%"
+        case .failed(let reason): return "file transcription failed — \(reason)"
+        case .cancelled: return "file transcription canceled"
+        }
+    }
+}
+
+public enum SoundVolumePresentation {
+    public static func amplitudes(for volume: CueVolume) -> (start: Float, stop: Float) {
+        (volume.rawValue, volume.rawValue)
     }
 }
