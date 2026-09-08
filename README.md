@@ -8,6 +8,12 @@ works offline without a per-use API charge.
 
 [Build and run](#build-and-run) · [Engineering](#engineering) · [Evaluation](#evaluation)
 
+## Demo
+
+[![Watch the 17-second WhisperApp walkthrough](docs/media/WhisperApp-demo-poster.png)](https://github.com/wbfrancis/WhisperApp/raw/refs/heads/main/docs/media/WhisperApp-demo.mp4)
+
+**[Watch with sound (MP4)](https://github.com/wbfrancis/WhisperApp/raw/refs/heads/main/docs/media/WhisperApp-demo.mp4)** — illustrated workflow with a synthetic voice. The transcript comes from the actual local engine; visuals and timing are edited, not a live screen recording or latency benchmark.
+
 ## What it does
 
 1. **Hold Right Option (`⌥`)** to record. A red status dot and a short sound confirm capture.
