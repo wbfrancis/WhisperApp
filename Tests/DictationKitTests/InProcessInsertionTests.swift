@@ -286,4 +286,22 @@ final class InProcessInsertionTests: XCTestCase {
         withExtendedLifetime((window, target)) {}
     }
 
+    func testFeedbackEditorUsesReadableDarkModeColors() {
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        let dark = NSAppearance(named: .darkAqua)!
+        textView.appearance = dark
+        FeedbackEditorPresentation.apply(to: textView)
+
+        var textBrightness: CGFloat = 0
+        var backgroundBrightness: CGFloat = 1
+        dark.performAsCurrentDrawingAppearance {
+            let text = textView.textColor!.usingColorSpace(.sRGB)!
+            let background = textView.backgroundColor.usingColorSpace(.sRGB)!
+            textBrightness = (text.redComponent + text.greenComponent + text.blueComponent) / 3
+            backgroundBrightness = (background.redComponent + background.greenComponent + background.blueComponent) / 3
+        }
+        XCTAssertGreaterThan(textBrightness, backgroundBrightness + 0.5)
+        XCTAssertTrue(textView.drawsBackground)
+    }
+
 }

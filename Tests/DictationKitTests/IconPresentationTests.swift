@@ -180,4 +180,22 @@ final class IconPresentationTests: XCTestCase {
         XCTAssertEqual(model.frame(at: 4.0), .normal)    // success fully faded
         XCTAssertFalse(model.isAnimating(at: 4.0))
     }
+
+    func testCustomColorsDriveEveryDotKind() {
+        let colors = StatusDotColors(
+            recording: IconColor(hex: "#010101")!,
+            processing: IconColor(hex: "#020202")!,
+            success: IconColor(hex: "#030303")!,
+            failure: IconColor(hex: "#040404")!
+        )
+        var model = IconPresentationModel(now: 0, colors: colors)
+        model.update(state: .recording, now: 0)
+        XCTAssertEqual(model.frame(at: 0).color, colors.recording)
+        model.update(state: .transcribing, now: 1)
+        XCTAssertEqual(model.frame(at: 1).color, colors.processing)
+        model.update(outcome: .injected("ok"), now: 2)
+        XCTAssertEqual(model.frame(at: 2).color, colors.success)
+        model.update(outcome: .failed("bad"), now: 3)
+        XCTAssertEqual(model.frame(at: 3).color, colors.failure)
+    }
 }

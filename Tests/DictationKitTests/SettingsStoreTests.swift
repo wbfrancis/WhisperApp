@@ -32,6 +32,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(loaded.restoreClipboard)
         XCTAssertEqual(loaded.cueVolume, .full)
         XCTAssertTrue(loaded.normalizeLiveDictation)
+        XCTAssertEqual(loaded.statusDotColors, .default)
     }
 
     func testEveryCueVolumeRoundTrips() {
@@ -48,6 +49,23 @@ final class SettingsStoreTests: XCTestCase {
         let custom = Settings(activationKey: .leftCommand, mode: .toggle, restoreClipboard: false)
         store.save(custom)
         XCTAssertEqual(store.load(), custom)
+    }
+
+    func testCustomDotColorsRoundTrip() {
+        let store = SettingsStore(defaults: scratchDefaults())
+        var colors = StatusDotColors.default
+        colors.recording = IconColor(hex: "#123456")!
+        colors.processing = IconColor(hex: "ABCDEF")!
+        colors.success = IconColor(hex: "#010203")!
+        colors.failure = IconColor(hex: "#FEDCBA")!
+        store.save(Settings(statusDotColors: colors))
+        XCTAssertEqual(store.load().statusDotColors, colors)
+    }
+
+    func testHexColorParsesAndFormatsCanonicalValue() {
+        XCTAssertEqual(IconColor(hex: " #12aBcF ")?.hex, "#12ABCF")
+        XCTAssertNil(IconColor(hex: "#12345"))
+        XCTAssertNil(IconColor(hex: "#GG0000"))
     }
 
     func testSettingsSurviveANewStoreOnTheSameDefaults() {

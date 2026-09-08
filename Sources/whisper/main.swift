@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restoreItem: NSMenuItem?
     private var normalizeLiveItem: NSMenuItem?
     private var cueVolumeItems: [NSMenuItem] = []
+    private var dotColorItems: [StatusDotKind: NSMenuItem] = [:]
     private var transcribeFileItem: NSMenuItem?
     private var cancelFileItem: NSMenuItem?
 
@@ -341,6 +342,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cueParent = NSMenuItem(title: "Cue Volume", action: nil, keyEquivalent: "")
         cueParent.submenu = cueMenu
         menu.addItem(cueParent)
+
+        let colorMenu = NSMenu()
+        for kind in StatusDotKind.allCases {
+            let item = NSMenuItem(title: "", action: #selector(editDotColor(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = kind.rawValue
+            colorMenu.addItem(item)
+            dotColorItems[kind] = item
+        }
+        colorMenu.addItem(.separator())
+        let previewMenu = NSMenu()
+        for kind in StatusDotKind.allCases {
+            let item = NSMenuItem(
+                title: kind.title, action: #selector(previewDotColor(_:)), keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = kind.rawValue
+            previewMenu.addItem(item)
+        }
+        let previewParent = NSMenuItem(title: "Preview", action: nil, keyEquivalent: "")
+        previewParent.submenu = previewMenu
+        colorMenu.addItem(previewParent)
+        let reset = NSMenuItem(
+            title: "Reset to Defaults", action: #selector(resetDotColors), keyEquivalent: ""
+        )
+        reset.target = self
+        colorMenu.addItem(reset)
+        let colorParent = NSMenuItem(title: "Dot Colors", action: nil, keyEquivalent: "")
+        colorParent.submenu = colorMenu
+        menu.addItem(colorParent)
     }
 
     private func refreshChecks() {
@@ -354,6 +385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         normalizeLiveItem?.state = settings.normalizeLiveDictation ? .on : .off
         for item in cueVolumeItems {
             item.state = (item.representedObject as? NSNumber)?.floatValue == settings.cueVolume.rawValue ? .on : .off
+        }
+        for (kind, item) in dotColorItems {
+            item.title = "\(kind.title)…  \(settings.statusDotColors[kind].hex)"
         }
     }
 
@@ -388,6 +422,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persist()
     }
 
+    @objc private func editDotColor(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let kind = StatusDotKind(rawValue: raw) else { return }
+        let field = NSTextField(string: settings.statusDotColors[kind].hex)
+        field.frame.size = NSSize(width: 180, height: 24)
+        while true {
+            let alert = NSAlert()
+            alert.messageText = "\(kind.title) dot color"
+            alert.informativeText = "Enter a six-digit hex color, such as #4A90E2."
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard let color = IconColor(hex: field.stringValue) else {
+                setStatus("invalid color — use #RRGGBB")
+                continue
+            }
+            settings.statusDotColors[kind] = color
+            persist()
+            iconAnimator?.preview(color: color, name: kind.title)
+            return
+        }
+    }
+
+    @objc private func previewDotColor(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let kind = StatusDotKind(rawValue: raw) else { return }
+        iconAnimator?.preview(color: settings.statusDotColors[kind], name: kind.title)
+    }
+
+    @objc private func resetDotColors() {
+        settings.statusDotColors = .default
+        persist()
+    }
+
     private func applyCueVolume() {
         let amplitudes = SoundVolumePresentation.amplitudes(for: settings.cueVolume)
         startSound?.volume = amplitudes.start
@@ -399,6 +469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func persist() {
         settingsStore.save(settings)
         controller?.settings = settings
+        iconAnimator?.update(colors: settings.statusDotColors)
         refreshChecks()
     }
 
@@ -436,6 +507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // waveform, visible at launch in either menu-bar appearance) and later reflects the
         // recording, processing, and result states.
         iconAnimator = MenuBarIconAnimator(button: button, renderer: IconRenderer(base: base))
+        iconAnimator?.update(colors: settings.statusDotColors)
     }
 
     /// Turn each dictation result into a status-line message. A failure most often means a
@@ -536,6 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         textView.font = .systemFont(ofSize: 13)
         textView.isRichText = false
         textView.allowsUndo = true
+        FeedbackEditorPresentation.apply(to: textView)
         scroll.documentView = textView
         alert.accessoryView = scroll
 

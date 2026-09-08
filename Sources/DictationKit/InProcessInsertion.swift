@@ -1,5 +1,16 @@
 import AppKit
 
+@MainActor
+public enum FeedbackEditorPresentation {
+    public static func apply(to textView: NSTextView) {
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .textColor
+        textView.insertionPointColor = .textColor
+        textView.usesAdaptiveColorMappingForDarkAppearance = true
+    }
+}
+
 /// A text destination the app owns and can insert into directly, without the pasteboard
 /// + synthesized ⌘V round trip. The Add Feedback editor registers one of these while its
 /// modal is up so a dictated transcript lands in it through the normal text-editing path.

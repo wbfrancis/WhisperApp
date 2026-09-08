@@ -2,7 +2,7 @@ import Foundation
 
 /// A gamma-independent RGB triple in 0...1. Kept AppKit-free so the icon model stays
 /// pure and testable; the app maps this onto an `NSColor` at draw time.
-public struct IconColor: Equatable, Sendable {
+public struct IconColor: Equatable, Sendable, Codable {
     public let red: Double
     public let green: Double
     public let blue: Double
@@ -12,12 +12,70 @@ public struct IconColor: Equatable, Sendable {
         self.blue = blue
     }
 
+    public init?(hex: String) {
+        var value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.first == "#" { value.removeFirst() }
+        guard value.count == 6, value.allSatisfy(\.isHexDigit),
+              let number = UInt32(value, radix: 16) else { return nil }
+        self.init(
+            Double((number >> 16) & 0xff) / 255,
+            Double((number >> 8) & 0xff) / 255,
+            Double(number & 0xff) / 255
+        )
+    }
+
+    public var hex: String {
+        func byte(_ value: Double) -> UInt8 {
+            UInt8((min(1, max(0, value)) * 255).rounded())
+        }
+        return String(format: "#%02X%02X%02X", byte(red), byte(green), byte(blue))
+    }
+
     /// The dictation-status palette. Shades are an implementation choice, subject to
-    /// visual review — the behavior table only fixes the hues (red/yellow/green/orange).
+    /// visual review — the behavior table only fixes the hues (red/yellow/blue/orange).
     public static let recordingRed = IconColor(0.85, 0.17, 0.15)
     public static let processingYellow = IconColor(0.96, 0.78, 0.13)
     public static let successBlue = IconColor(0.16, 0.50, 0.96)
     public static let failureOrange = IconColor(0.96, 0.53, 0.11)
+}
+
+public enum StatusDotKind: String, CaseIterable, Sendable, Codable {
+    case recording, processing, success, failure
+
+    public var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+}
+
+public struct StatusDotColors: Equatable, Sendable, Codable {
+    public var recording: IconColor
+    public var processing: IconColor
+    public var success: IconColor
+    public var failure: IconColor
+
+    public static let `default` = StatusDotColors(
+        recording: .recordingRed,
+        processing: .processingYellow,
+        success: .successBlue,
+        failure: .failureOrange
+    )
+
+    public subscript(kind: StatusDotKind) -> IconColor {
+        get {
+            switch kind {
+            case .recording: recording
+            case .processing: processing
+            case .success: success
+            case .failure: failure
+            }
+        }
+        set {
+            switch kind {
+            case .recording: recording = newValue
+            case .processing: processing = newValue
+            case .success: success = newValue
+            case .failure: failure = newValue
+            }
+        }
+    }
 }
 
 /// What the menu-bar icon should look like at one instant, expressed without AppKit.
@@ -79,11 +137,15 @@ public struct IconPresentationModel: Equatable, Sendable {
 
     public private(set) var kind: Kind
     private var start: TimeInterval
+    private var colors: StatusDotColors
 
-    public init(now: TimeInterval = 0) {
+    public init(now: TimeInterval = 0, colors: StatusDotColors = .default) {
         kind = .normal
         start = now
+        self.colors = colors
     }
+
+    public mutating func update(colors: StatusDotColors) { self.colors = colors }
 
     /// Apply a controller state transition.
     public mutating func update(state: DictationController.State, now: TimeInterval) {
@@ -160,27 +222,27 @@ public struct IconPresentationModel: Equatable, Sendable {
         case .normal:
             return .normal
         case .recording:
-            return IconRenderSpec(color: .recordingRed, normalWeight: 0)
+            return IconRenderSpec(color: colors.recording, normalWeight: 0)
         case .processing:
-            return blink(elapsed: elapsed, hz: Self.processingBlinkHz, color: .processingYellow)
+            return blink(elapsed: elapsed, hz: Self.processingBlinkHz, color: colors.processing)
         case .success:
             if elapsed < Self.successHold {
-                return IconRenderSpec(color: .successBlue, normalWeight: 0)
+                return IconRenderSpec(color: colors.success, normalWeight: 0)
             }
             let fade = min(1, (elapsed - Self.successHold) / Self.successFade)
             if fade >= 1 { return .normal }
-            return IconRenderSpec(color: .successBlue, normalWeight: fade)
+            return IconRenderSpec(color: colors.success, normalWeight: fade)
         case .failure:
             if elapsed < Self.failureBlink {
-                return blink(elapsed: elapsed, hz: Self.failureBlinkHz, color: .failureOrange)
+                return blink(elapsed: elapsed, hz: Self.failureBlinkHz, color: colors.failure)
             }
             let fade = min(1, (elapsed - Self.failureBlink) / Self.failureFade)
             if fade >= 1 { return .normal }
-            return IconRenderSpec(color: .failureOrange, normalWeight: fade)
+            return IconRenderSpec(color: colors.failure, normalWeight: fade)
         case .noSpeech:
             let fade = min(1, elapsed / Self.noSpeechFlash)
             if fade >= 1 { return .normal }
-            return IconRenderSpec(color: .failureOrange, normalWeight: fade)
+            return IconRenderSpec(color: colors.failure, normalWeight: fade)
         }
     }
 

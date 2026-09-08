@@ -83,23 +83,26 @@ public struct Settings: Equatable, Sendable, Codable {
     public var restoreClipboard: Bool
     public var cueVolume: CueVolume
     public var normalizeLiveDictation: Bool
+    public var statusDotColors: StatusDotColors
 
     public init(
         activationKey: ModifierKey = .rightOption,
         mode: Mode = .pushToTalk,
         restoreClipboard: Bool = true,
         cueVolume: CueVolume = .full,
-        normalizeLiveDictation: Bool = true
+        normalizeLiveDictation: Bool = true,
+        statusDotColors: StatusDotColors = .default
     ) {
         self.activationKey = activationKey
         self.mode = mode
         self.restoreClipboard = restoreClipboard
         self.cueVolume = cueVolume
         self.normalizeLiveDictation = normalizeLiveDictation
+        self.statusDotColors = statusDotColors
     }
 
     private enum CodingKeys: String, CodingKey {
-        case activationKey, mode, restoreClipboard, cueVolume, normalizeLiveDictation
+        case activationKey, mode, restoreClipboard, cueVolume, normalizeLiveDictation, statusDotColors
     }
 
     public init(from decoder: any Decoder) throws {
@@ -111,5 +114,8 @@ public struct Settings: Equatable, Sendable, Codable {
         normalizeLiveDictation = try values.decodeIfPresent(
             Bool.self, forKey: .normalizeLiveDictation
         ) ?? true
+        statusDotColors = try values.decodeIfPresent(
+            StatusDotColors.self, forKey: .statusDotColors
+        ) ?? .default
     }
 }

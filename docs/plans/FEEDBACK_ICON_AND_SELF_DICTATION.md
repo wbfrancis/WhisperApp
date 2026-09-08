@@ -2,7 +2,7 @@
 
 ## Scope and approval
 
-The user confirmed this design on September 3, 2026 and requested a plan for the next session. Implement two items from `~/Library/Application Support/whisper/feedback.md`: dictation into Add Feedback pastes the old clipboard, and the menu icon needs live dictation status.
+The user confirmed this design on September 3, 2026 and revised the icon treatment on September 4, 2026. Implement two items from `~/Library/Application Support/whisper/feedback.md`: dictation into Add Feedback pastes the old clipboard, and the menu icon needs live dictation status.
 
 The decisions below are settled. Proceed with implementation when the next session receives the handoff prompt. Ask about a product decision only if new evidence makes this design impossible or contradictory.
 
@@ -11,17 +11,17 @@ The decisions below are settled. Proceed with implementation when the next sessi
 | Event or state | Icon behavior |
 | --- | --- |
 | Idle | Existing waveform, visible in the normal macOS menu-bar appearance. |
-| Recording | Solid red waveform. |
-| Transcription and paste | Yellow pulse once per second, continuing through injection. |
-| Successful insertion | Solid green for one second, then fade to the normal icon over one second. |
-| Failed live dictation | Orange pulse twice per second for five seconds, then normal icon. |
-| Short capture or no speech | One brief orange flash, then normal icon; no additional sound. |
-| New recording during a result animation | Replace the animation immediately with solid red. |
+| Recording | Solid red status dot over the normal waveform. |
+| Transcription and paste | Yellow dot blink once per second, continuing through injection. |
+| Successful insertion | Solid blue dot for one second, then fade out over one second. |
+| Failed live dictation | Orange dot blink twice per second for five seconds, then a short fade. |
+| Short capture or no speech | One brief orange dot flash that fades out; no additional sound. |
+| New recording during a result animation | Replace the animation immediately with a solid red dot. |
 | File transcription | Existing menu progress only; it does not drive these icon states. |
 
-Green means the insertion operation returned successfully. For external apps, it does not claim that the destination visibly accepted the text. Preserve the existing start/stop sounds and saved cue volume. A short or silent recording adds no new beep; it does not remove the existing recording cues.
+Blue means the insertion operation returned successfully. For external apps, it does not claim that the destination visibly accepted the text. Preserve the existing start/stop sounds and saved cue volume. A short or silent recording adds no new beep; it does not remove the existing recording cues.
 
-Use a 250 ms no-speech flash as an implementation default for “brief,” not a separately approved duration. Keep the waveform shape and dimensions. Normal idle remains visible in light and dark menu bars; it never fades to an invisible icon. Color shades and pulse easing are implementation choices, subject to visual review.
+Use a 250 ms no-speech flash as an implementation default for “brief,” not a separately approved duration. Keep the waveform shape and dimensions. Normal idle remains visible in light and dark menu bars; it never fades to an invisible icon. Color shades are implementation choices, subject to visual review.
 
 Add Feedback must accept dictated text at the insertion point, replace selected text normally, and retain standard edit shortcuts, Undo, Save, Cancel, multiline entry, and the existing log format. Preserve the restore-clipboard setting and external-app dictation.
 
@@ -70,7 +70,7 @@ Completion: clock-driven tests cover the full behavior table, exact one/two/five
 
 Wire state updates from `render(_:)` and outcomes from `report(_:)` in `Sources/whisper/main.swift`. Preserve existing status messages and `resumeAfterLiveDictation()` behavior.
 
-Use the bundled waveform as an immutable mask; retain its normal template rendering for idle. Render active colors without allowing template tinting to erase them, and blend success back to the normal appearance. Keep backing scale, image size, fallback waveform, and menu interaction intact. Update accessibility text or tooltip to name the current state without rapid announcements on every frame.
+Retain the bundled waveform's normal template rendering and overlay the active status dot without template tinting. Fade the blue success dot out to the normal appearance. Keep backing scale, image size, fallback waveform, and menu interaction intact. Update accessibility text or tooltip to name the current state without rapid announcements on every frame.
 
 Drive animations on the main actor with one bounded redraw mechanism using elapsed time, rather than independent delayed closures for each phase. It must work while the menu or Add Feedback modal loop is open, stop when a static state is reached, and clean up at termination. Avoid per-frame resource loading or image allocation where practical; a small cached set or reusable renderer is sufficient.
 
@@ -90,9 +90,9 @@ The user requires explicit permission before signed-app, UI, or hardware accepta
 
 1. Put distinctive old text on the clipboard, open Add Feedback, dictate different words, and check that only the new transcript appears at the cursor. Repeat with a selection, use Undo, check ordinary Paste, and check Save/Cancel. Check both clipboard settings. Use a disposable log target for automated tests; preserve real feedback entries.
 2. Dictate into an external editor and check text insertion and clipboard restoration. Move focus away from Add Feedback before completion and check that the inactive editor does not receive the result.
-3. Check red during capture, yellow through processing, then one second green plus a one-second fade to the visible normal icon. Check light and dark menu-bar appearances without changing the user's system appearance unless authorized.
+3. Check the red dot during capture, the yellow dot through processing, then one second blue plus a one-second fade. Check light and dark menu-bar appearances without changing the user's system appearance unless authorized.
 4. Check one silent orange flash for a sub-0.5-second capture and for a no-speech result. Check the five-second orange failure animation through a controlled failure that does not revoke user permissions or damage the model installation.
-5. Start a new recording during green, its fade, and orange; check immediate red and no later stale reset. Open the menu and Add Feedback while animations run to check timer behavior.
+5. Start a new recording during blue, its fade, and orange; check immediate red and no later stale reset. Open the menu and Add Feedback while animations run to check timer behavior.
 6. Run file transcription, interrupt it with live dictation, and check that file progress stays in the menu while live recording owns the icon and file work resumes afterward.
 
 Completion: report which live checks the user or authorized agent completed and any remaining failures. Keep unapproved live checks explicitly pending. Commit or publish only when separately requested; preserve unrelated work in any later commit.

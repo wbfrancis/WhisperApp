@@ -9,6 +9,7 @@ public final class MenuBarIconAnimator {
     private let draw: (IconRenderSpec, String) -> Void
     private var timer: Timer?
     private var stopped = false
+    private var preview: (color: IconColor, label: String, end: TimeInterval)?
     var isTimerRunning: Bool { timer != nil }
 
     public convenience init(
@@ -39,19 +40,33 @@ public final class MenuBarIconAnimator {
 
     public func update(state: DictationController.State) {
         guard !stopped else { return }
+        preview = nil
         model.update(state: state, now: clock())
         refresh()
     }
 
     public func update(outcome: DictationController.Outcome) {
         guard !stopped else { return }
+        preview = nil
         model.update(outcome: outcome, now: clock())
+        refresh()
+    }
+
+    public func update(colors: StatusDotColors) {
+        guard !stopped else { return }
+        model.update(colors: colors)
+        refresh()
+    }
+
+    public func preview(color: IconColor, name: String, duration: TimeInterval = 2) {
+        guard !stopped else { return }
+        preview = (color, name, clock() + duration)
         refresh()
     }
 
     private func refresh() {
         tick()
-        if model.isAnimating(at: clock()) { startTimer() }
+        if preview != nil || model.isAnimating(at: clock()) { startTimer() }
     }
 
     private func startTimer() {
@@ -68,6 +83,11 @@ public final class MenuBarIconAnimator {
     func tick() {
         guard !stopped else { return }
         let now = clock()
+        if let preview, now < preview.end {
+            draw(IconRenderSpec(color: preview.color, normalWeight: 0), "Preview — \(preview.label)")
+            return
+        }
+        preview = nil
         draw(model.frame(at: now), Self.accessibilityLabel(model.visibleKind(at: now)))
         if !model.isAnimating(at: now) { invalidateTimer() }
     }

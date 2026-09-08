@@ -54,11 +54,15 @@ The automatic repair of live capture after the system input device changes. A ch
 **Status dot**:
 The live-dictation state shown by a colored dot in the bottom-right foreground of the menu-bar icon, while the waveform behind it stays the normal shape and color. Idle shows no dot: just the normal waveform, visible in both light and dark menu bars, never fading to an invisible icon. Recording is a solid red dot. Transcription and paste share one slow yellow blink, crisp on and off. A successful insertion is a solid blue dot for one second, then fades out over one second. A failed live dictation blinks the dot orange quickly for five seconds, then fades out. A short capture or no-speech result gives one brief orange flash that fades out. The blinks never fade in or out; only the success and failure results fade, since those are the end states. A new recording during any result animation replaces the dot at once with solid red. File transcription does not drive this dot; its progress stays in the menu status line.
 
+**Dot colors**:
+The saved `#RRGGBB` colors for Recording, Processing, Success, and Failure status dots. The menu can edit, preview, and reset each color; new settings take effect immediately.
+_Avoid_: Theme, palette
+
 **Insertion success**:
 The state the blue dot reports: the insertion operation returned without error. For an external app it does not claim the destination visibly accepted the text, only that the paste was posted; for Add Feedback it means the transcript was inserted into the editor.
 
 **Add Feedback**:
-A menu action that appends a typed or dictated note to the feedback log. Dictated speech is inserted at the insertion point, replacing any selection, and keeps the standard edit shortcuts, Undo, Save, and Cancel. It inserts the new transcript, never the previous clipboard. The restore-clipboard setting still holds: with restore on the clipboard is left untouched, with it off the transcript is left on the clipboard.
+A menu action that appends a typed or dictated note to the feedback log. Its editor uses readable system text and background colors for the current macOS appearance. Dictated speech is inserted at the insertion point, replacing any selection, and keeps the standard edit shortcuts, Undo, Save, and Cancel. It inserts the new transcript, never the previous clipboard. The restore-clipboard setting still holds: with restore on the clipboard is left untouched, with it off the transcript is left on the clipboard.
 _Avoid_: feedback box, note dialog
 
 ## Settled facts (environment)
